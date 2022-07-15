@@ -1,0 +1,326 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = 'C:/Users/dneki/Desktop/Columbia/Applied Analytics/APAN 5200 Frameworks & Methods/kaggle/Titanic')
+```
+
+```{r, echo=FALSE}
+library(dplyr)
+library(ISLR2)
+library(rpart)
+library(rpart.plot)
+library(skimr)
+library(ggplot2)
+library(tidyr)
+library(data.table)
+library(GGally)
+library(ggcorrplot)
+library(mltools)
+library(Matrix)
+library(glmnet)
+library(mltools)
+library(caret)
+library(leaps)
+library(lubridate)
+library(DT)
+library(forcats)
+library(summarytools)
+library(e1071)
+library(Hmisc)
+library(ComplexHeatmap)
+library(circlize)
+library(mice)
+library(Lahman)
+library(printr)
+library(readr)
+library(xgboost)
+library(gbm)
+library(vtreat)
+library(car)
+library(forcats)
+# source('data_manipulation_functions.R')
+```
+
+```{r}
+data = read.csv('train.csv')
+scoringData = read.csv('test.csv')
+```
+
+```{r}
+data = data %>% mutate(type = "analysis")
+scoringData = scoringData %>% mutate(type = "scoring")
+combinedData = bind_rows(data, scoringData)
+```
+
+```{r}
+char2na <- function(x) {
+  x <- as.character(x)
+  return(case_when(
+    x == "" ~ NA_character_,
+    x == "N/A" ~ NA_character_,
+    TRUE ~ x
+  ))
+}
+
+combinedData <- combinedData %>%
+  mutate_if(is.character, char2na) %>%
+  mutate_if(is.factor, char2na)
+```
+
+
+```{r}
+combinedData = combinedData %>% mutate(across(where(is.character),as.factor))
+combinedData$Survived = as.factor(combinedData$Survived)
+combinedData$Pclass = as.factor(combinedData$Pclass)
+combinedData$PassengerId = as.factor(combinedData$PassengerId)
+```
+
+
+```{r}
+combinedData$Embarked[is.na(combinedData$Embarked)] <- 'S'
+
+combinedData$Fare[is.na(combinedData$Fare)] =
+  median(combinedData$Fare, na.rm=TRUE)
+
+combinedData$Age[is.na(combinedData$Age)] =
+  median(combinedData$Age, na.rm=TRUE)
+
+combinedData$Cabin = fct_explicit_na(combinedData$Cabin, na_level = '(Missing)')
+
+
+```
+
+<!-- ```{r} -->
+<!-- evenbins <- function(x, bin.count=10, order=T) { -->
+<!--     bin.size <- rep(length(x) %/% bin.count, bin.count) -->
+<!--     bin.size <- bin.size + ifelse(1:bin.count <= length(x) %% bin.count, 1, 0) -->
+<!--     bin <- rep(1:bin.count, bin.size) -->
+<!--     if(order) {     -->
+<!--         bin <- bin[rank(x,ties.method="random")] -->
+<!--     } -->
+<!--     return(factor(bin, levels=1:bin.count, ordered=order)) -->
+<!-- } -->
+
+<!-- combinedData$id.bin <- evenbins(combinedData$PassengerId, 100) -->
+<!-- ``` -->
+
+```{r}
+combinedData$CabCat = as.factor(substr(combinedData$Cabin, 1,1))
+combinedData$TickCat = as.factor(substr(combinedData$Ticket, 1,3))
+combinedData$CabCat = fct_explicit_na(combinedData$CabCat, na_level = '(Missing)')
+```
+
+```{r}
+combinedData = combinedData %>%
+  separate(Name, c("LastName", "Sex2", "FirstName", "MiscName", "MiscName2", "MiscName3" , "MiscName4"), " ")
+
+combinedData = combinedData %>% mutate(across(where(is.character),as.factor))
+combinedData$PassengerId = as.numeric(combinedData$PassengerId)
+
+combinedData$LastName = fct_explicit_na(combinedData$LastName, na_level = '(Missing)')
+combinedData$Sex2 = fct_explicit_na(combinedData$Sex2, na_level = '(Missing)')
+combinedData$FirstName = fct_explicit_na(combinedData$FirstName, na_level = '(Missing)')
+combinedData$MiscName = fct_explicit_na(combinedData$MiscName, na_level = '(Missing)')
+combinedData$MiscName2 = fct_explicit_na(combinedData$MiscName2, na_level = '(Missing)')
+combinedData$MiscName3 = fct_explicit_na(combinedData$MiscName3, na_level = '(Missing)')
+combinedData$MiscName4 = fct_explicit_na(combinedData$MiscName4, na_level = '(Missing)')
+```
+
+
+# Conducting Models
+
+```{r}
+cont = combinedData %>% select_if(is.numeric) %>%  names()
+cont_data = combinedData[cont]
+
+
+cat = combinedData %>% select_if(is.factor) %>%  names()
+cat_data = combinedData[cat]
+cat_data = cat_data[-1]
+
+type = combinedData$type
+id = combinedData$PassengerId
+response = combinedData$Survived
+
+ohe_feats = c("Pclass","LastName","Sex2","FirstName","MiscName","MiscName2","MiscName3","MiscName4","Sex","Ticket"   
+,"Cabin","Embarked","type","CabCat","TickCat")
+
+dmy <- dummyVars(
+~Pclass+LastName+Sex2+FirstName+MiscName+MiscName2+MiscName3+MiscName4+Sex+Ticket 
++Cabin+Embarked+type+CabCat+TickCat, data = cat_data)
+
+trsf <- as.data.frame(predict(dmy, newdata = cat_data))
+
+df_all_combined = cbind(cont_data, trsf)
+
+
+remove_nzv_columns <- function(current_var){
+  x <- NULL
+  if(nearZeroVar(current_var,saveMetrics = T)[4] == 'FALSE'){
+    x <- current_var
+  }else{
+    
+  }
+  return(x)
+}
+
+combinedData = df_all_combined %>% mutate_all(remove_nzv_columns)
+
+combinedData$type = type
+combinedData$id = id
+combinedData$Survived = response
+
+# Make Valid Column Names 
+colnames(combinedData) <- make.names(colnames(combinedData))
+```
+
+# Tree
+
+```{r}
+library(caTools)
+set.seed(617)
+analysis = filter(combinedData, type == 'analysis')
+split = sample.split(analysis$Survived, SplitRatio = 0.7)
+
+train = analysis[split,]
+test = analysis[!split,]
+
+tree = rpart(Survived~., data=train, method = 'class')
+
+pred_tree = predict(tree, newdata = test, type = 'prob')
+library(ROCR)
+ROCRPred = prediction(predictions = pred_tree[,2], labels = test$Survived)
+auc = as.numeric(performance(prediction.obj = ROCRPred, measure = 'auc')@y.values); auc
+
+tree$variable.importance
+```
+
+# gbm
+
+```{r}
+library(caret)
+
+trControl = trainControl(method='cv',number = 10) #10 fold.
+tuneGrid = expand.grid(.cp = seq(from = 0, to = 0.1,by = 0.001)) #cp from 0.001 to 0.1 in 0.001 steps.
+set.seed(100)
+cvModel = train(Survived~.,
+                data=train,
+                method="rpart",
+                trControl = trControl,
+                tuneGrid = tuneGrid)
+
+cvTree = rpart(Survived~., data=train,cp = cvModel$bestTune$cp)
+pred = predict(cvTree,newdata=test, type = 'prob')
+
+
+
+ROCRPred = prediction(predictions = pred[,2], labels = test$Survived)
+auc = as.numeric(performance(prediction.obj = ROCRPred, measure = 'auc')@y.values); auc
+```
+
+```{r}
+library(randomForest)
+set.seed(617)
+bag = randomForest(Survived~.,data=train,mtry = ncol(train)-1,ntree=1000)
+
+pred = predict(bag,newdata=test, type = 'prob')
+
+ROCRPred = prediction(predictions = pred[,2], labels = test$Survived)
+auc = as.numeric(performance(prediction.obj = ROCRPred, measure = 'auc')@y.values); round(auc,2)
+```
+
+#### Performing Gradient Boosting
+```{r}
+model_gbm = gbm(Survived~.,
+              data = train,
+              distribution = "multinomial",
+              cv.folds = 10,
+              shrinkage = .01,
+              n.minobsinnode = 10,
+              n.trees = 500)       # 500 tress to be built
+
+pred = predict.gbm(object = model_gbm,
+                   newdata = test,
+                   n.trees = 500,           # 500 tress to be built
+                   type = "response")
+
+pred = as.data.frame(pred)
+
+ROCRPred = prediction(predictions = pred[,2], labels = test$Survived)
+auc = as.numeric(performance(prediction.obj = ROCRPred, measure = 'auc')@y.values); round(auc,2)
+```
+
+## XGBOOST
+
+```{r}
+library(e1071)
+
+X_train = data.matrix(train[,-33])
+y_train = train[,33]
+
+X_test = data.matrix(test[,-33])                   
+y_test = test[,33]   
+
+xgboost_train = xgb.DMatrix(data=X_train, label=y_train)
+xgboost_test = xgb.DMatrix(data=X_test, label=y_test)
+
+
+
+
+model <- xgboost(data = xgboost_train,                  # the data   
+                 max.depth=3,                           # max depth 
+                 nrounds=200,                           # max number of boosting iterations
+                 early.stop.round = 10,
+                 verbose = 0,
+                 nfold = 10)                              
+
+pred_test = predict(model, xgboost_test)
+
+
+pred_test[(pred_test>3)] = 3
+pred_y = as.factor((levels(y_test))[round(pred_test)])
+pred_y = as.numeric(pred_y)
+
+
+ROCRPred = prediction(predictions = pred_y, labels = test$Survived)
+auc = as.numeric(performance(prediction.obj = ROCRPred, measure = 'auc')@y.values); round(auc,2)
+```
+
+
+## Result
+```{r}
+train = filter(combinedData, type == 'analysis')
+test = filter(combinedData, type == 'scoring') 
+
+library(randomForest)
+set.seed(617)
+bag = randomForest(Survived~.,data=train,mtry = ncol(train)-1,ntree=1000)
+
+pred = predict(bag,newdata=test, type = 'prob')
+
+pred = as.numeric(pred[,2]>0.6156716)
+# ROCRPred = prediction(predictions = pred[,2], labels = test$Survived)
+# auc = as.numeric(performance(prediction.obj = ROCRPred, measure = 'auc')@y.values); round(auc,2)
+```
+
+
+#### Modeling
+
+
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+scoringData = filter(combinedData, type == 'scoring')
+
+#pred = as.numeric(pred)-1
+
+submissionFile = data.frame(PassengerId = scoringData$PassengerId, Survived = pred)
+write.csv(submissionFile, 'submission.csv',row.names = F)
+```
+
+
+
+
+
+
+
+
